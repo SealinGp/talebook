@@ -115,6 +115,47 @@ class TestUpload(TestWithUserLogin):
             self.assertEqual(d["err"], "ok")
 
 
+class TestUploadRawMultipartChinese(TestWithUserLogin):
+    """端到端回归测试：通过真实 multipart/form-data 请求上传中文文件名的 ebook。
+
+    走完整的 Tornado HTTP 解析链路（_parse_body → BookUpload.post），
+    确保 monkey patch 在 web 上下文中生效，而不仅仅是底层函数。
+    """
+
+    @mock.patch("webserver.handlers.base.BaseHandler.user_history")
+    @mock.patch("webserver.handlers.base.BaseHandler.add_msg")
+    @mock.patch("webserver.models.Item.save")
+    @mock.patch("calibre.db.legacy.LibraryDatabase.import_book")
+    def test_upload_chinese_filename_raw_multipart(self, mock_import, mock_save, mock_msg, mock_hist):
+        warnings.simplefilter("ignore", ResourceWarning)
+        mock_import.return_value = 9999
+        mock_save.return_value = True
+        mock_msg.return_value = True
+        mock_hist.return_value = True
+
+        path = testdir + "/cases/title_has_0x00.pdf"
+        with open(path, "rb") as f:
+            pdf_bytes = f.read()
+
+        boundary = "----TalebookChineseBoundary"
+        filename = "《纳瓦尔宝典》.pdf"
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="ebook"; filename="{filename}"\r\n'
+            f"Content-Type: application/pdf\r\n\r\n"
+        ).encode("utf-8")
+        tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        body = head + pdf_bytes + tail
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+
+        rsp = self.fetch("/api/book/upload", method="POST", body=body, headers=headers, request_timeout=30)
+        # 关键断言：不应再出现 400 "Invalid body: Invalid multipart/form-data"
+        self.assertEqual(rsp.code, 200, msg=f"unexpected status {rsp.code}: {rsp.body[:200]!r}")
+        d = json.loads(rsp.body)
+        # 业务结果可能是 ok 或 samebook（文件名重复时），但绝不能是 multipart 解析失败
+        self.assertNotIn(d.get("err"), ("exception", None, ""), msg=f"unexpected err: {d!r}")
+
+
 class TestUploadFormatSecurity(TestWithUserLogin):
     """上传格式白名单和路径穿越防护的安全测试"""
 
